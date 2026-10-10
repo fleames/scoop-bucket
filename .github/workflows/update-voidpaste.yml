@@ -1,0 +1,68 @@
+name: Update VoidPaste
+
+on:
+  repository_dispatch:
+    types: [voidpaste-release]
+  workflow_dispatch:
+  schedule:
+    - cron: "29 4 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve release metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.client_payload.version }}
+          WINDOWS_AMD64: ${{ github.event.client_payload.windows_amd64 }}
+          WINDOWS_ARM64: ${{ github.event.client_payload.windows_arm64 }}
+        run: |
+          if [[ -z "${VERSION}" ]]; then
+            tag="$(gh release view --repo fleames/voidpaste-cli --json tagName --jq .tagName)"
+            VERSION="${tag#v}"
+            sums="$(curl --fail --silent --show-error --location \
+              "https://github.com/fleames/voidpaste-cli/releases/download/${tag}/SHA256SUMS")"
+            hash() { awk -v name="$1" '$2 == name { print $1 }' <<<"$sums"; }
+            WINDOWS_AMD64="$(hash "voidpaste_${tag}_windows_amd64.zip")"
+            WINDOWS_ARM64="$(hash "voidpaste_${tag}_windows_arm64.zip")"
+          fi
+          for name in VERSION WINDOWS_AMD64 WINDOWS_ARM64; do
+            test -n "${!name}"
+            printf '%s=%s\n' "$name" "${!name}" >>"$GITHUB_ENV"
+          done
+      - name: Update manifest
+        run: |
+          jq --arg version "$VERSION" \
+             --arg amd64 "$WINDOWS_AMD64" \
+             --arg arm64 "$WINDOWS_ARM64" \
+             '.version = $version
+              | .architecture["64bit"].url = "https://github.com/fleames/voidpaste-cli/releases/download/v\($version)/voidpaste_v\($version)_windows_amd64.zip"
+              | .architecture["64bit"].hash = $amd64
+              | .architecture["64bit"].extract_dir = "voidpaste_v\($version)_windows_amd64"
+              | .architecture.arm64.url = "https://github.com/fleames/voidpaste-cli/releases/download/v\($version)/voidpaste_v\($version)_windows_arm64.zip"
+              | .architecture.arm64.hash = $arm64
+              | .architecture.arm64.extract_dir = "voidpaste_v\($version)_windows_arm64"' \
+             bucket/voidpaste.json > bucket/voidpaste.json.tmp
+          mv bucket/voidpaste.json.tmp bucket/voidpaste.json
+      - name: Open update pull request
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git diff --exit-code && exit 0
+          branch="automation/voidpaste-${VERSION}"
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout -b "$branch"
+          git add bucket/voidpaste.json
+          git commit -m "Update VoidPaste to ${VERSION}"
+          git push --force-with-lease origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "Update VoidPaste to ${VERSION}" \
+            --body "Generated from the signed VoidPaste CLI release and its published SHA256SUMS."
