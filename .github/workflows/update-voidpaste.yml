@@ -38,7 +38,7 @@ jobs:
           done
       - name: Update manifest
         run: |
-          jq --arg version "$VERSION" \
+          jq --indent 4 --arg version "$VERSION" \
              --arg amd64 "$WINDOWS_AMD64" \
              --arg arm64 "$WINDOWS_ARM64" \
              '.version = $version
